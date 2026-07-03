@@ -33,7 +33,7 @@ pip install -r requirements.txt
 from lms_logger import LMSClient, AppLogRequest, AuditLogRequest, LogLevel
 
 with LMSClient(
-    base_url="https://lms.example.gov.mn",
+    base_url="https://lms.example.mn",
     service_id="your32charhexserviceid",
     secret="your-hmac-secret",
 ) as client:
@@ -69,7 +69,7 @@ from lms_logger.client import AsyncLMSClient
 from lms_logger import AppLogRequest, LogLevel
 
 async with AsyncLMSClient(
-    base_url="https://lms.example.gov.mn",
+    base_url="https://lms.example.mn",
     service_id="your32charhexserviceid",
     secret="your-hmac-secret",
 ) as client:

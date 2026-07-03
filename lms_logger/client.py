@@ -56,7 +56,7 @@ class LMSClient:
         from lms_logger import LMSClient, AppLogRequest, LogLevel
 
         client = LMSClient(
-            base_url="https://lms.example.gov.mn",
+            base_url="https://lms.example.mn",
             service_id="your-service-uuid-no-dashes",
             secret="your-hmac-secret",
         )
