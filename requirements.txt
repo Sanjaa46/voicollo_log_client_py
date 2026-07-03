@@ -1,0 +1,8 @@
+# Runtime
+httpx
+pydantic
+
+# Testing
+pytest
+pytest-asyncio
+respx

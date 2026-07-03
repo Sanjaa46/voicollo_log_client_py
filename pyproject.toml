@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lms-logger"
+version = "0.1.0"
+description = "Python client for the LMS log ingestion API with HMAC-SHA256 request signing"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",        # mock httpx in tests
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lms_logger*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
