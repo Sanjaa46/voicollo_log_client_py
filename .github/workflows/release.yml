@@ -1,29 +1,105 @@
 name: Release
+
+# Version driven releases. src/lms_logger/_version.py is the source of truth:
+#
+#   * push to main  -> if tag v<version> does not exist yet, test + build,
+#                      then create the tag and the GitHub release (with the
+#                      wheel and sdist). If it exists, nothing happens.
+#   * push a v* tag -> release that tag (it must match _version.py).
+#   * Actions tab   -> "Run workflow" re-runs the check for the current main.
+#
+# So releasing = bump _version.py and the CHANGELOG in a PR and merge it.
+# Nobody has to push tags by hand.
 on:
   push:
+    branches: [main]
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  id-token: write   # PyPI trusted publishing (optional)
+  id-token: write # PyPI trusted publishing (optional)
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - name: Tag must match package version
-        run: |
-          version=$(python -c "import re;print(re.search(r'\"(.+)\"', open('src/lms_logger/_version.py').read()).group(1))")
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != version $version"; exit 1; }
-      - run: pip install build && python -m build
-      - uses: softprops/action-gh-release@v2
         with:
+          fetch-depth: 0 # needs existing tags to decide whether to release
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Decide version
+        id: version
+        run: |
+          version="$(python -c "import re; print(re.search(r'\"(.+)\"', open('src/lms_logger/_version.py').read()).group(1))")"
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match _version.py ($version)"; exit 1
+            fi
+            release=true
+          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already released; nothing to do"
+            release=false
+          else
+            release=true
+          fi
+          prerelease=false
+          [[ "$version" =~ (a|b|rc|dev)[0-9]* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "release=$release"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - if: steps.version.outputs.release == 'true'
+        run: pip install -e ".[dev]"
+
+      - name: Lint, type-check, test
+        if: steps.version.outputs.release == 'true'
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+          mypy
+          pytest -q
+
+      - if: steps.version.outputs.release == 'true'
+        run: python -m build
+
+      - name: Release notes from CHANGELOG
+        if: steps.version.outputs.release == 'true'
+        run: |
+          awk -v v="${{ steps.version.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          {
+            echo
+            echo "Install: \`pip install \"lms-logger @ git+https://github.com/${{ github.repository }}@${{ steps.version.outputs.tag }}\"\`"
+          } >> release-notes.md
+
+      # Creates the tag on this exact commit if it does not exist yet.
+      - if: steps.version.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: lms-logger ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
           files: dist/*
-          generate_release_notes: true
-      # Enable by configuring PyPI trusted publishing for this repo and setting
-      # the repository variable PUBLISH_TO_PYPI=true.
-      - if: vars.PUBLISH_TO_PYPI == 'true'
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+
+      # Enable by configuring PyPI trusted publishing for this repository and
+      # setting the repository variable PUBLISH_TO_PYPI=true.
+      - if: steps.version.outputs.release == 'true' && vars.PUBLISH_TO_PYPI == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1

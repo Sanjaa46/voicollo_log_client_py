@@ -6,6 +6,11 @@ Versioning: [SemVer](https://semver.org/). The version lives in
 
 ## [Unreleased]
 
+### Changed
+- Releases are automatic: merging a version bump into `main` creates the
+  `vX.Y.Z` tag and GitHub release. Tags no longer need to be pushed by hand.
+- The release workflow now runs ruff, mypy and pytest before building.
+
 ## [1.0.0] - 2026-10-30
 
 Requires LMS server **2.0.0** or newer for the documented error codes (older

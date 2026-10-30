@@ -163,6 +163,8 @@ pip install -e ".[dev]"
 pytest && ruff check src tests && mypy
 ```
 
-Release: bump `src/lms_logger/_version.py`, add a CHANGELOG section, commit,
-then `git tag vX.Y.Z && git push --tags`. CI builds the wheel and attaches it
-to the GitHub release. It also publishes to PyPI if `PUBLISH_TO_PYPI` is enabled.
+Release: bump `src/lms_logger/_version.py`, add a CHANGELOG section, open a
+PR and merge it. On `main`, the Release workflow sees a version without a tag,
+runs ruff, mypy and pytest, builds the wheel, and then creates the `vX.Y.Z` tag
+and GitHub release with the files attached. It also publishes to PyPI if
+`PUBLISH_TO_PYPI` is enabled. Nobody pushes tags by hand.
