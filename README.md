@@ -1,153 +1,168 @@
-# lms-logger
+# lms-logger (Python)
 
-Python client for the LMS Log Management System API.  
-Handles HMAC-SHA256 request signing, retries, and response parsing — sync and async.
+Python client for the **Voicollo Log Management System**.
 
-## Installation
+- HMAC-SHA256 request signing. Each retry is signed fresh, so it is never seen as a replay.
+- Automatic retries with jittered backoff on network errors, 5xx and 429 (`Retry-After`).
+- Field validation that matches the server, so mistakes fail locally.
+- Sync and asyncio clients, plus a stdlib `logging` handler.
+- **Buffered mode**: background batching. Logging never raises into your app.
 
-Add to `requirements.txt`:
+Requires Python ≥ 3.10 and an LMS server ≥ 2.0.
 
-```
-git+https://github.com/YOUR_ORG/lms-logger.git@main
-```
+## Install
 
-Or pin to a specific commit for stability:
-
-```
-git+https://github.com/YOUR_ORG/lms-logger.git@abc1234
-```
-
-Then install:
+Pin a release tag:
 
 ```bash
-pip install -r requirements.txt
+pip install "lms-logger @ git+https://github.com/Sanjaa46/voicollo_log_client_py@v1.0.0"
 ```
 
----
+In `requirements.txt`:
 
-## Quick Start
+```
+lms-logger @ git+https://github.com/Sanjaa46/voicollo_log_client_py@v1.0.0
+```
 
-### Sync (scripts, CLI tools, Django, etc.)
+## Configure
+
+Register your service in the LMS console (**Services → Register**), then give
+your app three values:
+
+| Variable | Value |
+|---|---|
+| `LMS_URL` | the LMS address, e.g. `https://lms.example.com` |
+| `LMS_INGEST_SECRET` | the LMS `INGEST_SIGNING_SECRET` |
+| `LMS_SOURCE_SERVICE` | your registered service id |
+
+## Quick start
 
 ```python
-from lms_logger import LMSClient, AppLogRequest, AuditLogRequest, LogLevel
+import os
+from lms_logger import LMSClient
 
-with LMSClient(
-    base_url="https://lms.example.mn",
-    service_id="your32charhexserviceid",
-    secret="your-hmac-secret",
-) as client:
+lms = LMSClient(
+    base_url=os.environ["LMS_URL"],
+    secret=os.environ["LMS_INGEST_SECRET"],
+    source_service=os.environ["LMS_SOURCE_SERVICE"],
+    environment="production",
+)
 
-    # Single app log
-    client.log_app(AppLogRequest(
-        service_id=client.service_id,
-        level=LogLevel.INFO,
-        message="Service started",
-        extra={"version": "1.0.0"},
-    ))
+lms.info("Payment captured", context={"order_id": 8812, "amount": 129000})
+lms.error("Gateway timeout", context={"gateway": "golomt"}, trace_id=request_id)
 
-    # Batch app logs (one HTTP call)
-    client.log_app_batch([
-        AppLogRequest(service_id=client.service_id, level=LogLevel.DEBUG, message="step 1"),
-        AppLogRequest(service_id=client.service_id, level=LogLevel.DEBUG, message="step 2"),
-    ])
+lms.audit(
+    actor_id=str(user.id),
+    actor_type="USER",            # USER | SERVICE | SYSTEM
+    action="RECORD_DELETE",       # VERB_NOUN
+    target_resource="/records/42",
+    outcome="SUCCESS",            # SUCCESS | FAILURE | PARTIAL
+    ip_address=request.client.host,
+    detail={"reason": "duplicate"},
+)
 
-    # Audit log (immutable — DELETE is blocked by LMS)
-    client.log_audit(AuditLogRequest(
-        service_id=client.service_id,
-        actor_id="user-uuid",
-        action="DELETE",
-        resource="citizen_record",
-        resource_id="42",
-    ))
+lms.close()   # or: with LMSClient(...) as lms:
 ```
 
-### Async (FastAPI, async services)
+Levels: `debug`, `info`, `warn` (`warning`), `error`, `fatal` (`critical`), or
+`lms.log("WARN", ...)`. Timestamps default to now. Naive `datetime`s are read as
+local time and sent in UTC.
+
+## Buffered mode (recommended for web apps)
 
 ```python
-from lms_logger.client import AsyncLMSClient
-from lms_logger import AppLogRequest, LogLevel
+lms = LMSClient(..., buffered=True, batch_size=50, flush_interval=2.0,
+                on_error=lambda exc, entry: sentry_sdk.capture_exception(exc))
 
-async with AsyncLMSClient(
-    base_url="https://lms.example.mn",
-    service_id="your32charhexserviceid",
-    secret="your-hmac-secret",
-) as client:
-    await client.log_app(AppLogRequest(
-        service_id=client.service_id,
-        level=LogLevel.ERROR,
-        message="Payment failed",
-        extra={"order_id": "ord_999"},
-    ))
+lms.info("queued, returns None immediately")
+lms.flush()   # optional: wait until sent
+lms.close()   # drains the queue (also runs automatically at interpreter exit)
 ```
 
-### FastAPI lifespan pattern
+A background thread batches app logs into `/logs/app/batch`; audit logs are
+sent one by one. Failures and dropped entries (when the queue is full,
+`max_queue=10000`) are passed to `on_error`. Without `on_error` they are logged
+as warnings on the `lms_logger` logger.
+
+## stdlib `logging`
 
 ```python
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from lms_logger.client import AsyncLMSClient
+import logging
 
-lms: AsyncLMSClient | None = None
+lms = LMSClient(..., buffered=True)
+logging.getLogger().addHandler(lms.handler(level=logging.INFO))
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global lms
-    lms = AsyncLMSClient(
-        base_url=settings.LMS_URL,
-        service_id=settings.LMS_SERVICE_ID,
-        secret=settings.LMS_SECRET,
-    )
-    yield
-    await lms.close()
-
-app = FastAPI(lifespan=lifespan)
+log = logging.getLogger(__name__)
+log.info("user signed in", extra={"user_id": 7, "trace_id": "abc123"})
+log.exception("payment failed")    # traceback goes to context_json.exception
 ```
 
----
+`extra=` fields go into `context_json`, and `extra={"trace_id": ...}` sets the
+trace id. Records from `httpx`/`httpcore`/`lms_logger` are ignored, so the
+handler can never loop on its own traffic.
 
-## Error Handling
+## asyncio
 
 ```python
-from lms_logger.exceptions import LMSAuthError, LMSRateLimitError, LMSValidationError, LMSConnectionError
+from lms_logger import AsyncLMSClient
 
-try:
-    client.log_app(...)
-except LMSAuthError:
-    # Wrong secret or clock drift > tolerance
-    ...
-except LMSRateLimitError:
-    # Back off — do NOT retry immediately
-    ...
-except LMSValidationError as e:
-    # Your payload is malformed — e.response_body has details
-    ...
-except LMSConnectionError:
-    # LMS is down after max_retries attempts
-    ...
+async with AsyncLMSClient(base_url=..., secret=..., source_service="billing-api",
+                          environment="production") as lms:
+    await lms.info("started")
+    await lms.audit(actor_id="u-1", actor_type="USER", action="USER_LOGIN",
+                    target_resource="/login", outcome="SUCCESS")
 ```
 
----
+`AsyncLMSClient(buffered=True)` batches in a background task. Call
+`await lms.close()` on shutdown, e.g. in a FastAPI lifespan.
 
-## HMAC Signing
+## Explicit models and batches
 
-The client signs every request with:
+```python
+from lms_logger import AppLogRequest, AuditLogRequest, LogLevel
 
+lms.log_app(AppLogRequest(level=LogLevel.INFO, message="hi", context_json={"a": 1}))
+result = lms.log_app_batch([AppLogRequest(level="INFO", message=f"m{i}") for i in range(100)])
+for failure in result.failures:            # partial success is per entry
+    print(failure.index, failure.error_code, failure.message)
 ```
-message = f"{unix_timestamp}.{sha256(body).hexdigest()}"
-x-signature = HMAC-SHA256(secret, message)
-```
 
-Your LMS server must verify the same string. The secret never leaves your environment.
+## Errors
 
----
+All exceptions inherit `LMSError` (`status_code`, `error_code`, `request_id`,
+`response_body`).
 
-## Configuration
-
-| Parameter | Default | Description |
+| Exception | When | Retried |
 |---|---|---|
-| `base_url` | required | LMS API base URL |
-| `service_id` | required | Your registered service UUID (32 hex chars) |
-| `secret` | required | HMAC shared secret |
-| `timeout` | `10.0` | HTTP timeout in seconds |
-| `max_retries` | `3` | Retries on network error (never retries 401/422/429) |
+| `LMSConfigError` | missing `secret` / `source_service` / `environment` | — |
+| `LMSAuthError` | 401: wrong secret, or clock skew (`SIGNATURE_EXPIRED`) | no |
+| `LMSPermissionError` | 403 `SERVICE_DISABLED` | no |
+| `LMSValidationError` | 422: invalid payload, `SERVICE_NOT_REGISTERED` | no |
+| `LMSConflictError` | 409 `DUPLICATE_REQUEST` | no |
+| `LMSRateLimitError` | 429 (`.retry_after`) | yes |
+| `LMSServerError` | 5xx | yes |
+| `LMSConnectionError` | network / timeout after all retries | yes |
+
+Options: `timeout=10`, `max_retries=3`, `backoff=0.5`, `max_backoff=30`,
+`headers={...}`.
+
+## Signing protocol
+
+```
+X-Timestamp: <unix seconds>
+X-Signature: hex(HMAC_SHA256(secret, "<timestamp>." + raw_json_body))
+```
+
+The server rejects timestamps outside its tolerance window (default 60 s) and
+any signature it has already seen.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest && ruff check src tests && mypy
+```
+
+Release: bump `src/lms_logger/_version.py`, add a CHANGELOG section, commit,
+then `git tag vX.Y.Z && git push --tags`. CI builds the wheel and attaches it
+to the GitHub release. It also publishes to PyPI if `PUBLISH_TO_PYPI` is enabled.

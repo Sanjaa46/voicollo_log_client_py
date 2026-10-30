@@ -1,0 +1,29 @@
+name: Release
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  id-token: write   # PyPI trusted publishing (optional)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Tag must match package version
+        run: |
+          version=$(python -c "import re;print(re.search(r'\"(.+)\"', open('src/lms_logger/_version.py').read()).group(1))")
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != version $version"; exit 1; }
+      - run: pip install build && python -m build
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+      # Enable by configuring PyPI trusted publishing for this repo and setting
+      # the repository variable PUBLISH_TO_PYPI=true.
+      - if: vars.PUBLISH_TO_PYPI == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
